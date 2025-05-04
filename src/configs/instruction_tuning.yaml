@@ -1,0 +1,27 @@
+# Paths
+input_path: training_data/rag_pairs.jsonl
+output_dir: instruction_tuning_output
+tokenized_output_path: tokenized_dataset
+model_name_or_path: NousResearch/Llama-2-7b-hf
+lora_adapters: llama_lora_adapters
+
+# Tokenization
+max_length: 1024
+
+# LoRA Config
+lora_r: 8
+lora_alpha: 16
+lora_dropout: 0.05
+target_modules:
+  - q_proj
+  - v_proj
+  # - k_proj to speed up training
+  # - o_proj
+
+# Training
+batch_size: 1
+gradient_accumulation_steps: 8
+epochs: 3
+lr: 0.0002
+eval_steps: 100
+save_steps: 100
