@@ -1,0 +1,25 @@
+# Core LLM stack
+torch==2.2.2
+transformers==4.39.3
+peft==0.13.2
+accelerate==0.28.0
+
+# Embedding models & sentence-level similarity
+sentence-transformers==2.6.1
+
+# Optional: for UI if using Streamlit
+streamlit==1.35.0
+
+# Optional: for vector search (if planning FAISS)
+faiss-cpu==1.8.0
+
+# Optional: for dataset handling
+datasets==2.19.1
+
+# Ensure compatibility
+numpy<1.26
+scipy<1.11  # for some LLM internals
+
+# conda create -n travelchat python=3.10 -y
+# conda activate travelchat
+# pip install --no-cache-dir -r src/requirements.txt -i https://pypi.org/simple

@@ -144,25 +144,34 @@ bedrock = session.client("bedrock-runtime", region_name="us-east-1")
 model_id = "anthropic.claude-3-sonnet-20240229-v1:0"
 
 
-def call_claude(prompt, retries=5, base_delay=2):
+def call_claude_stream(prompt, retries=5, base_delay=2):
+    body = {
+        "anthropic_version": "bedrock-2023-05-31",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 512,
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "stream": True
+    }
+
     for attempt in range(retries):
         try:
-            body = {
-                "anthropic_version": "bedrock-2023-05-31",
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 512,
-                "temperature": 0.7,
-                "top_p": 0.9,
-            }
-
-            response = bedrock.invoke_model(
+            response = bedrock.invoke_model_with_response_stream(
                 modelId=model_id,
                 contentType="application/json",
                 accept="application/json",
                 body=json.dumps(body),
             )
-            result = json.loads(response["body"].read())
-            return result["content"][0]["text"].strip()
+
+            def stream_generator():
+                for event in response['body']:
+                    if "chunk" in event:
+                        chunk = json.loads(event["chunk"]["bytes"])
+                        content = chunk.get("content", [{}])
+                        if content and isinstance(content, list) and "text" in content[0]:
+                            yield content[0]["text"]
+
+            return stream_generator()
 
         except botocore.exceptions.ClientError as e:
             if e.response["Error"]["Code"] == "ThrottlingException":
@@ -175,7 +184,7 @@ def call_claude(prompt, retries=5, base_delay=2):
             print(f"⚠️ Unexpected error: {e}")
             time.sleep(1)
 
-    raise RuntimeError("❌ Claude call failed after retries")
+    raise RuntimeError("❌ Claude streaming call failed after retries")
 
 
 def rag_qa(question, chunks, embedder):
@@ -226,35 +235,6 @@ def extract_location(text):
         if ent["entity_group"] in ["LOC", "PER", "ORG"]:  # optionally just "LOC"
             return ent["word"].strip()
     return None
-
-
-# --- RAG chatbot function ---
-def answer_question_with_rag(question, location, chunks, embedder):
-    if not location:
-        msg = "❗ I couldn't find a destination in your message. Please mention the place you're asking about."
-        print("⚠️ No location extracted from query.")
-        return msg, None
-
-    location_lower = location.lower()
-    location_chunks = [
-        c for c in chunks if c.get("location", "").lower() == location_lower
-    ]
-
-    if not location_chunks:
-        print("⚠️ No matching location context found. Falling back to Claude.")
-        fallback_prompt = f"You are a helpful travel assistant. Answer the following question:\n\nQuestion: {question}\n\nAnswer:"
-        return call_claude(fallback_prompt), None
-
-    docs = retrieve(question, location_chunks, embedder)
-    if not any(docs):
-        print("⚠️ No relevant RAG context found. Falling back to Claude without RAG.")
-        fallback_prompt = f"You are a helpful travel assistant. Answer the following question:\n\nQuestion: {question}\n\nAnswer:"
-        return call_claude(fallback_prompt), None
-
-    context = "\n---\n".join(docs)
-    prompt = build_rag_prompt(context, question)
-    answer = call_claude(prompt)
-    return answer, context
 
 
 def maybe_update_rag(location, index_dir="faiss_index"):
