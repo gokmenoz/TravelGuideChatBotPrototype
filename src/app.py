@@ -8,62 +8,12 @@ from utils import (
     maybe_update_rag, load_index, retrieve,
     call_claude_stream, build_rag_prompt
 )
-from transformers import AutoTokenizer, AutoModelForCausalLM
-import torch
-from peft import PeftModel, merge_and_unload
-from transformers import TextIteratorStreamer
-import threading
 
 
 # --- Bedrock client ---
 session = boto3.Session(profile_name="ogokmen_bedrock")
 bedrock = session.client("bedrock-runtime", region_name="us-east-1")
 model_id = "anthropic.claude-3-sonnet-20240229-v1:0"
-
-# --- Load LLaMA model and tokenizer once ---
-@st.cache_resource
-def load_llama_model():
-    base_model_name = "NousResearch/Llama-2-7b-hf" 
-    lora_path = "llama_lora_adapters/checkpoint-279"
-
-    # Load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(base_model_name)
-    tokenizer.pad_token = tokenizer.eos_token
-
-    # Load base model
-    base_model = AutoModelForCausalLM.from_pretrained(
-        base_model_name,
-        torch_dtype=torch.float16,
-        device_map="auto"
-    )
-
-    # Load and merge LoRA
-    model = PeftModel.from_pretrained(base_model, lora_path)
-    model = merge_and_unload(model)  # merge adapters into base model in memory
-
-    return tokenizer, model
-
-# --- LLaMA inference ---
-def llama_inference_stream(prompt):
-    tokenizer, model = load_llama_model()
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-
-    streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
-    generation_kwargs = dict(
-        **inputs,
-        streamer=streamer,
-        max_new_tokens=512,
-        do_sample=True,
-        temperature=0.7,
-        top_p=0.9,
-        pad_token_id=tokenizer.eos_token_id
-    )
-
-    thread = threading.Thread(target=model.generate, kwargs=generation_kwargs)
-    thread.start()
-
-    for token in streamer:
-        yield token
 
 
 # --- Load FAISS + chunks ---
@@ -104,7 +54,7 @@ def answer_question_with_rag(question, location, chunks, embedder):
     context = "\n---\n".join(docs)
     prompt = build_rag_prompt(context, question)
 
-    return llama_inference_stream(prompt), context
+    return call_claude_stream(prompt), context
 
 
 # --- Streamlit UI ---
@@ -144,7 +94,7 @@ if user_input:
             output = ""
             
             response_gen, context = answer_question_with_rag(
-                user_input, location, chunks, embedder, stream=True
+                user_input, location, chunks, embedder
             )
 
             for word in response_gen:

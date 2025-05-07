@@ -12,6 +12,11 @@ import numpy as np
 import requests
 from sentence_transformers import SentenceTransformer
 from transformers import AutoTokenizer, pipeline
+from transformers import AutoTokenizer, AutoModelForCausalLM
+import torch
+from peft import PeftModel
+from transformers import TextIteratorStreamer
+import threading
 
 
 def get_wikivoyage_page(title: str, lang="en") -> str:
@@ -143,6 +148,50 @@ session = boto3.Session(profile_name="ogokmen_bedrock")
 bedrock = session.client("bedrock-runtime", region_name="us-east-1")
 model_id = "anthropic.claude-3-sonnet-20240229-v1:0"
 
+# --- Load LLaMA model and tokenizer once ---
+def load_llama_model():
+    base_model_name = "NousResearch/Llama-2-7b-hf" 
+    lora_path = "instruction_tuning_output/llama_lora_adapters"
+
+    # Load tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(base_model_name)
+    tokenizer.pad_token = tokenizer.eos_token
+
+    # Load base model
+    base_model = AutoModelForCausalLM.from_pretrained(
+        base_model_name,
+        torch_dtype=torch.float16,
+        device_map="auto"
+    )
+
+    # Load and merge LoRA
+    model = PeftModel.from_pretrained(base_model, lora_path)
+    model.merge_adapter()  # merge adapters into base model in memory
+
+    return tokenizer, model
+
+# --- LLaMA inference ---
+def llama_inference_stream(prompt):
+    tokenizer, model = load_llama_model()
+    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+
+    streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+    generation_kwargs = dict(
+        **inputs,
+        streamer=streamer,
+        max_new_tokens=512,
+        do_sample=True,
+        temperature=0.7,
+        top_p=0.9,
+        pad_token_id=tokenizer.eos_token_id
+    )
+
+    thread = threading.Thread(target=model.generate, kwargs=generation_kwargs)
+    thread.start()
+
+    for token in streamer:
+        yield token
+
 
 def call_claude_stream(prompt, retries=5, base_delay=2):
     body = {
@@ -150,8 +199,7 @@ def call_claude_stream(prompt, retries=5, base_delay=2):
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": 512,
         "temperature": 0.7,
-        "top_p": 0.9,
-        "stream": True
+        "top_p": 0.9
     }
 
     for attempt in range(retries):
@@ -164,18 +212,20 @@ def call_claude_stream(prompt, retries=5, base_delay=2):
             )
 
             def stream_generator():
-                for event in response['body']:
+                for event in response["body"]:
                     if "chunk" in event:
-                        chunk = json.loads(event["chunk"]["bytes"])
-                        content = chunk.get("content", [{}])
-                        if content and isinstance(content, list) and "text" in content[0]:
-                            yield content[0]["text"]
+                        chunk_data = json.loads(event["chunk"]["bytes"])
+                        if chunk_data.get("type") == "content_block_delta":
+                            delta = chunk_data.get("delta", {})
+                            text = delta.get("text", "")
+                            if text:
+                                yield text
 
             return stream_generator()
 
         except botocore.exceptions.ClientError as e:
             if e.response["Error"]["Code"] == "ThrottlingException":
-                wait = base_delay * (2**attempt) + random.uniform(0, 1)
+                wait = base_delay * (2 ** attempt) + random.uniform(0, 1)
                 print(f"⏳ Throttled. Retrying in {wait:.2f}s...")
                 time.sleep(wait)
             else:
@@ -191,7 +241,7 @@ def rag_qa(question, chunks, embedder):
     retrieved_chunks = retrieve(question, chunks, embedder, top_k=5)
     context = "\n---\n".join(retrieved_chunks)
     prompt = build_rag_prompt(context, question)
-    return call_claude(prompt)
+    return call_claude_stream(prompt)
 
 
 def log_training_example(
