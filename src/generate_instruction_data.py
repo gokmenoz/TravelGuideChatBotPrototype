@@ -5,15 +5,8 @@ import re
 from tqdm import tqdm
 
 from constants import QUESTIONS  # seed list
-from utils import (
-    build_extension_prompt,
-    build_rag_prompt,
-    call_claude,
-    embedder,
-    load_index,
-    log_training_example,
-    retrieve,
-)
+from utils import (build_extension_prompt, build_rag_prompt, call_claude,
+                   embedder, load_index, log_training_example, retrieve)
 
 
 def generate_instruction_data(questions, out_path="training_data/rag_pairs.jsonl"):

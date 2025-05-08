@@ -5,3 +5,5 @@ QUESTIONS = [
     "How do I travel from Rome to Florence?",
     "What are kid-friendly activities in New York?",
 ]
+
+OPENWEATHER_API_KEY = ""

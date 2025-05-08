@@ -3,15 +3,8 @@ import os
 import faiss
 
 from constants import QUESTIONS
-from utils import (
-    build_faiss_index,
-    chunk_text,
-    embedder,
-    extract_location,
-    get_wikivoyage_page,
-    load_index,
-    save_index,
-)
+from utils import (build_faiss_index, chunk_text, embedder, extract_location,
+                   get_wikivoyage_page, load_index, save_index)
 
 INDEX_DIR = "faiss_index"
 

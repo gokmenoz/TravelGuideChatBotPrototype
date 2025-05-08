@@ -8,13 +8,9 @@ import torch
 import yaml
 from datasets import Dataset, load_from_disk
 from peft import LoraConfig, get_peft_model
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    DataCollatorForLanguageModeling,
-    Trainer,
-    TrainingArguments,
-)
+from transformers import (AutoModelForCausalLM, AutoTokenizer,
+                          DataCollatorForLanguageModeling, Trainer,
+                          TrainingArguments)
 
 from utils import format_llama_chat_example, tokenize_dataset
 

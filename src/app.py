@@ -1,14 +1,13 @@
-import streamlit as st
+import pickle
+
 import boto3
 import faiss
-import pickle
+import streamlit as st
 from sentence_transformers import SentenceTransformer
-from utils import (
-    log_training_example, extract_location, 
-    maybe_update_rag, load_index, retrieve,
-    call_claude_stream, build_rag_prompt
-)
 
+from utils import (build_rag_prompt, call_claude_stream, extract_location,
+                   load_index, log_training_example, maybe_update_rag,
+                   retrieve)
 
 # --- Bedrock client ---
 session = boto3.Session(profile_name="ogokmen_bedrock")
@@ -30,6 +29,7 @@ def load_faiss_index():
 def load_embedder():
     return SentenceTransformer("BAAI/bge-base-en")
 
+
 # --- RAG chatbot function ---
 def answer_question_with_rag(question, location, chunks, embedder):
     if not location:
@@ -38,7 +38,9 @@ def answer_question_with_rag(question, location, chunks, embedder):
         return msg, None
 
     location_lower = location.lower()
-    location_chunks = [c for c in chunks if c.get("location", "").lower() == location_lower]
+    location_chunks = [
+        c for c in chunks if c.get("location", "").lower() == location_lower
+    ]
 
     if not location_chunks:
         print("⚠️ No matching location context found. Falling back to Claude.")
@@ -92,7 +94,7 @@ if user_input:
         with st.spinner("Thinking..."):
             result_container = st.empty()
             output = ""
-            
+
             response_gen, context = answer_question_with_rag(
                 user_input, location, chunks, embedder
             )

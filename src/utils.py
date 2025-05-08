@@ -2,6 +2,7 @@ import json
 import os
 import pickle
 import random
+import threading
 import time
 from typing import Dict, List
 
@@ -10,13 +11,83 @@ import botocore.exceptions
 import faiss
 import numpy as np
 import requests
-from sentence_transformers import SentenceTransformer
-from transformers import AutoTokenizer, pipeline
-from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 from peft import PeftModel
-from transformers import TextIteratorStreamer
-import threading
+from sentence_transformers import SentenceTransformer
+from transformers import (AutoModelForCausalLM, AutoTokenizer,
+                          TextIteratorStreamer, pipeline)
+
+from constants import OPENWEATHER_API_KEY
+
+
+def get_weather(city: str):
+    url = f"https://api.openweathermap.org/data/2.5/weather"
+    params = {"q": city, "appid": OPENWEATHER_API_KEY, "units": "metric"}
+
+    response = requests.get(url, params=params).json()
+    if response.get("cod") != 200:
+        return {"error": f"Could not fetch weather for {city}."}
+
+    weather = response["weather"][0]["description"]
+    temp = response["main"]["temp"]
+    feels_like = response["main"]["feels_like"]
+
+    return {
+        "city": city,
+        "weather": weather,
+        "temperature_c": temp,
+        "feels_like_c": feels_like,
+    }
+
+
+def visa_info(country: str):
+    url = f"https://restcountries.com/v3.1/name/{country}"
+    response = requests.get(url).json()
+
+    if isinstance(response, list):
+        data = response[0]
+        name = data.get("name", {}).get("common", country)
+        region = data.get("region", "Unknown")
+        subregion = data.get("subregion", "Unknown")
+        capital = data.get("capital", ["Unknown"])[0]
+        population = data.get("population", "Unknown")
+
+        return {
+            "country": name,
+            "region": region,
+            "subregion": subregion,
+            "capital": capital,
+            "population": population,
+            "visa_note": "❗Visa requirements vary by passport. Check https://apply.joinsherpa.com/ or your embassy.",
+        }
+
+    return {"error": f"Could not find visa info for {country}"}
+
+
+def maybe_enrich_prompt(question: str, location: str) -> str:
+    prompt_parts = []
+
+    # Weather
+    if "weather" in question.lower():
+        weather = get_weather(location)
+        if "error" not in weather:
+            prompt_parts.append(
+                f"The current weather in {location} is {weather['temperature_c']}°C, "
+                f"feels like {weather['feels_like_c']}°C, with {weather['weather']}."
+            )
+
+    # Visa
+    if "visa" in question.lower():
+        visa = visa_info(location)
+        if "error" not in visa:
+            prompt_parts.append(
+                f"{visa['visa_note']} {location} is in {visa['subregion']} with capital {visa['capital']}."
+            )
+
+    # Budget (if added later)
+    # ...
+
+    return "\n".join(prompt_parts) if prompt_parts else ""
 
 
 def get_wikivoyage_page(title: str, lang="en") -> str:
@@ -148,9 +219,10 @@ session = boto3.Session(profile_name="ogokmen_bedrock")
 bedrock = session.client("bedrock-runtime", region_name="us-east-1")
 model_id = "anthropic.claude-3-sonnet-20240229-v1:0"
 
+
 # --- Load LLaMA model and tokenizer once ---
 def load_llama_model():
-    base_model_name = "NousResearch/Llama-2-7b-hf" 
+    base_model_name = "NousResearch/Llama-2-7b-hf"
     lora_path = "instruction_tuning_output/llama_lora_adapters"
 
     # Load tokenizer
@@ -159,9 +231,7 @@ def load_llama_model():
 
     # Load base model
     base_model = AutoModelForCausalLM.from_pretrained(
-        base_model_name,
-        torch_dtype=torch.float16,
-        device_map="auto"
+        base_model_name, torch_dtype=torch.float16, device_map="auto"
     )
 
     # Load and merge LoRA
@@ -170,12 +240,15 @@ def load_llama_model():
 
     return tokenizer, model
 
+
 # --- LLaMA inference ---
 def llama_inference_stream(prompt):
     tokenizer, model = load_llama_model()
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
 
-    streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+    streamer = TextIteratorStreamer(
+        tokenizer, skip_prompt=True, skip_special_tokens=True
+    )
     generation_kwargs = dict(
         **inputs,
         streamer=streamer,
@@ -183,7 +256,7 @@ def llama_inference_stream(prompt):
         do_sample=True,
         temperature=0.7,
         top_p=0.9,
-        pad_token_id=tokenizer.eos_token_id
+        pad_token_id=tokenizer.eos_token_id,
     )
 
     thread = threading.Thread(target=model.generate, kwargs=generation_kwargs)
@@ -193,13 +266,15 @@ def llama_inference_stream(prompt):
         yield token
 
 
-def call_claude_stream(prompt, retries=5, base_delay=2):
+def call_claude_stream(prompt=None, messages_override=None, retries=5, base_delay=2):
+    messages = messages_override or [{"role": "user", "content": prompt}]
+
     body = {
         "anthropic_version": "bedrock-2023-05-31",
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": messages,
         "max_tokens": 512,
         "temperature": 0.7,
-        "top_p": 0.9
+        "top_p": 0.9,
     }
 
     for attempt in range(retries):
@@ -225,7 +300,7 @@ def call_claude_stream(prompt, retries=5, base_delay=2):
 
         except botocore.exceptions.ClientError as e:
             if e.response["Error"]["Code"] == "ThrottlingException":
-                wait = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                wait = base_delay * (2**attempt) + random.uniform(0, 1)
                 print(f"⏳ Throttled. Retrying in {wait:.2f}s...")
                 time.sleep(wait)
             else:
@@ -235,6 +310,37 @@ def call_claude_stream(prompt, retries=5, base_delay=2):
             time.sleep(1)
 
     raise RuntimeError("❌ Claude streaming call failed after retries")
+
+
+def maybe_enrich_prompt(question: str, location: str) -> str:
+    prompt_parts = []
+
+    # Weather
+    if "weather" in question.lower():
+        weather = get_weather(location)
+        if "error" not in weather:
+            prompt_parts.append(
+                f"The current weather in {location} is {weather['temperature_c']}°C, "
+                f"feels like {weather['feels_like_c']}°C, with {weather['weather']}."
+            )
+
+    # Visa
+    if "visa" in question.lower():
+        visa = visa_info(location)
+        if "error" not in visa:
+            prompt_parts.append(
+                f"{visa['visa_note']} {location} is in {visa['subregion']} with capital {visa['capital']}."
+            )
+
+    # Budget (if added later)
+    # ...
+
+    return "\n".join(prompt_parts) if prompt_parts else ""
+
+
+def build_prompt_with_history(history, question):
+    messages = history + [{"role": "user", "content": question}]
+    return messages
 
 
 def rag_qa(question, chunks, embedder):
