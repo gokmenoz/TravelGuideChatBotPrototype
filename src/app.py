@@ -5,9 +5,14 @@ import faiss
 import streamlit as st
 from sentence_transformers import SentenceTransformer
 
-from utils import (build_rag_prompt, call_claude_stream, extract_location,
-                   load_index, log_training_example, maybe_update_rag,
-                   retrieve)
+from utils import (
+    build_rag_prompt,
+    call_claude_stream,
+    extract_location,
+    load_index,
+    maybe_update_rag,
+    retrieve,
+)
 
 # --- Bedrock client ---
 session = boto3.Session(profile_name="ogokmen_bedrock")
@@ -60,7 +65,7 @@ def answer_question_with_rag(question, location, chunks, embedder):
 
 
 # --- Streamlit UI ---
-st.title("🧳 Travel Chatbot powered by LLAMA and Claude")
+st.title("🧳 Travel Chatbot powered by Claude")
 st.write("Ask about a destination. We will use travel docs to answer.")
 
 # Load index + model
@@ -104,5 +109,4 @@ if user_input:
                 result_container.markdown(output + "▌")
 
             result_container.markdown(output)
-            log_training_example(user_input, context, output)
             st.session_state.messages.append({"role": "assistant", "content": output})

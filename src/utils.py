@@ -2,7 +2,6 @@ import json
 import os
 import pickle
 import random
-import threading
 import time
 from typing import Dict, List
 
@@ -11,11 +10,8 @@ import botocore.exceptions
 import faiss
 import numpy as np
 import requests
-import torch
-from peft import PeftModel
 from sentence_transformers import SentenceTransformer
-from transformers import (AutoModelForCausalLM, AutoTokenizer,
-                          TextIteratorStreamer, pipeline)
+from transformers import (AutoTokenizer, pipeline)
 
 from constants import OPENWEATHER_API_KEY
 
@@ -220,52 +216,6 @@ bedrock = session.client("bedrock-runtime", region_name="us-east-1")
 model_id = "anthropic.claude-3-sonnet-20240229-v1:0"
 
 
-# --- Load LLaMA model and tokenizer once ---
-def load_llama_model():
-    base_model_name = "NousResearch/Llama-2-7b-hf"
-    lora_path = "instruction_tuning_output/llama_lora_adapters"
-
-    # Load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(base_model_name)
-    tokenizer.pad_token = tokenizer.eos_token
-
-    # Load base model
-    base_model = AutoModelForCausalLM.from_pretrained(
-        base_model_name, torch_dtype=torch.float16, device_map="auto"
-    )
-
-    # Load and merge LoRA
-    model = PeftModel.from_pretrained(base_model, lora_path)
-    model.merge_adapter()  # merge adapters into base model in memory
-
-    return tokenizer, model
-
-
-# --- LLaMA inference ---
-def llama_inference_stream(prompt):
-    tokenizer, model = load_llama_model()
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-
-    streamer = TextIteratorStreamer(
-        tokenizer, skip_prompt=True, skip_special_tokens=True
-    )
-    generation_kwargs = dict(
-        **inputs,
-        streamer=streamer,
-        max_new_tokens=512,
-        do_sample=True,
-        temperature=0.7,
-        top_p=0.9,
-        pad_token_id=tokenizer.eos_token_id,
-    )
-
-    thread = threading.Thread(target=model.generate, kwargs=generation_kwargs)
-    thread.start()
-
-    for token in streamer:
-        yield token
-
-
 def call_claude_stream(prompt=None, messages_override=None, retries=5, base_delay=2):
     messages = messages_override or [{"role": "user", "content": prompt}]
 
@@ -350,34 +300,6 @@ def rag_qa(question, chunks, embedder):
     return call_claude_stream(prompt)
 
 
-def log_training_example(
-    question, context, answer, path="training_data/rag_pairs.jsonl"
-):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "a") as f:
-        f.write(
-            json.dumps(
-                {
-                    "input": f"Question: {question}\n\nContext:\n{context}",
-                    "output": answer.strip(),
-                }
-            )
-            + "\n"
-        )
-
-
-def build_extension_prompt(seed_questions, n=20):
-    formatted = "\n".join(f"- {q}" for q in seed_questions)
-    return f"""
-You are a helpful travel assistant trainer. Based on the following travel-related user questions, generate {n} *new* questions that are similar in style, varied in topic, and useful for travel planning.
-
-Original questions:
-{formatted}
-
-Return a numbered list of {n} new questions only.
-"""
-
-
 # Load once globally
 ner = pipeline("ner", model="dslim/bert-base-NER", grouped_entities=True)
 
@@ -420,19 +342,6 @@ def maybe_update_rag(location, index_dir="faiss_index"):
         pickle.dump(all_chunks, f)
 
     print(f"✅ {location} added to index.")
-
-
-def format_llama_chat_example(example):
-    """
-    Convert a single input/output pair into LLaMA chat-style prompt:
-    <s>[INST] ... [/INST] ...
-    """
-    system_prompt = "You are a helpful travel assistant."
-    instruction = example["input"]
-    answer = example["output"]
-
-    formatted = f"<s>[INST] <<SYS>>\n{system_prompt}\n<</SYS>>\n\n{instruction} [/INST] {answer} </s>"
-    return {"text": formatted}
 
 
 def tokenize_dataset(dataset, tokenizer, max_length=1024):

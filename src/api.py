@@ -8,14 +8,21 @@ from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer
 
 from constants import OPENWEATHER_API_KEY
-from utils import (build_prompt_with_history, build_rag_prompt,
-                   call_claude_stream, extract_location, get_weather,
-                   maybe_enrich_prompt, retrieve, visa_info)
+from utils import (
+    build_prompt_with_history,
+    build_rag_prompt,
+    call_claude_stream,
+    extract_location,
+    get_weather,
+    maybe_enrich_prompt,
+    retrieve,
+    visa_info,
+)
 
 """
-uvicorn src.api:app --reload
+uvicorn src.api:app --host 0.0.0.0 --port 8001 --reload
 
-curl -X POST http://localhost:8000/chat \
+curl -X POST http://127.0.0.1:8001/chat \
   -H "Content-Type: application/json" \
   -d '{"query": "What can I do for 3 days in Lisbon?"}'
 """

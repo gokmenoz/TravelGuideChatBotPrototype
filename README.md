@@ -18,7 +18,7 @@ This repository contains the code for a Travel Guide Chatbot, built using Stream
 * Sentence Transformers (`all-MiniLM-L6-v2`)
 * PyTorch (optimized for Apple Silicon)
 * FAISS (CPU version)
-* Claude and LLaMA generative AI models
+* Claude 3.7 Sonnet generative AI
 
 ## Installation
 
@@ -29,18 +29,26 @@ git clone TravelGuideChatBotPrototype
 cd TravelGuideChatBotPrototype
 ```
 
+Here's the updated `README.md` reflecting your switch from **conda** to **Python virtual environments (`venv`)** due to segmentation fault issues:
+
+---
+
+### ✅ Updated `README.md` snippet (only the changed section):
+
+````markdown
 ### Setup Environment (Recommended)
 
-Create and activate a conda environment:
+Create and activate a Python virtual environment:
 
 ```bash
-conda create -n travelchat python=3.10 -y
-conda activate travelchat
-```
+python3.10 -m venv travelchat-venv
+source travelchat-venv/bin/activate  # or .\travelchat-venv\Scripts\activate on Windows
+````
 
 Install dependencies:
 
 ```bash
+pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
@@ -49,6 +57,7 @@ pip install -r requirements.txt
 ```bash
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 ```
+
 
 ## Running the Chatbot
 
@@ -61,7 +70,7 @@ streamlit run src/app.py
 The chatbot interface will be available at:
 
 ```
-http://localhost:8501
+http://localhost:8001
 ```
 
 ## Project Structure
@@ -70,11 +79,10 @@ http://localhost:8501
 .
 ├── src
 │   ├── app.py           # Streamlit UI entry point
-│   ├── instruction_tuning.py   
+│   ├── api.py 
 │   ├── build_faiss_index.py
 │   ├── constants.py
-│   ├── generate_instruction_data.py
-│   └── embeddings.py    
+│   └── utils.py    
 ├── faiss_index          # FAISS indexes
 ├── requirements.txt     # Python dependencies
 └── README.md            # This documentation
