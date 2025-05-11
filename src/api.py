@@ -13,8 +13,9 @@ from src.utils import (
     maybe_enrich_prompt,
     retrieve,
     visa_info,
-    load_index,
+    update_index,
     embedder,
+    chunks,
 )
 
 """
@@ -22,7 +23,7 @@ uvicorn src.api:app --host 0.0.0.0 --port 8001 --reload
 
 curl -X POST http://127.0.0.1:8001/chat \
   -H "Content-Type: application/json" \
-  -d '{"query": "What can I do for 3 days in Lisbon?"}'
+  -d '{"message": "What can I do for 3 days in Lisbon?"}'
 """
 
 app = FastAPI(title="Travel Guide Chatbot API")
@@ -35,9 +36,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Load FAISS index and chunks
-index, chunks = load_index()
 
 class ChatRequest(BaseModel):
     message: str
@@ -64,6 +62,10 @@ async def chat(request: ChatRequest):
     try:
         # Extract location from message
         location = extract_location(request.message)
+        
+        # Update index with new location if found
+        if location:
+            update_index(location)
         
         # Enrich prompt with additional context
         enriched_context = maybe_enrich_prompt(request.message, location) if location else ""

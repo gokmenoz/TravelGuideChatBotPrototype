@@ -22,9 +22,10 @@ wheels/
 
 # Virtual Environment
 venv/
+travelchat-venv/
 env/
-ENV/
-.env
+.env/
+.venv/
 
 # IDE
 .idea/
@@ -33,9 +34,11 @@ ENV/
 *.swo
 
 # Project specific
-travel_docs/
 faiss_index/
 .ruff_cache/
 
 # Logs
-*.log 
+*.log
+
+# Local development
+.DS_Store 

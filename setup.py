@@ -17,18 +17,18 @@ setup(
         "requests>=2.31.0",
         "boto3>=1.28.0",
         "botocore>=1.31.0",
-        "python-dotenv>=1.0.0",  # Added for environment variable management
+        "python-dotenv>=1.0.0",
+        "typing-extensions>=4.5.0",
+        "tokenizers>=0.15.0",
+        "torch>=2.0.0",
     ],
-    python_requires=">=3.8",
+    python_requires=">=3.10,<3.11",  # Specifically require Python 3.10
     classifiers=[
         "Development Status :: 3 - Alpha",
         "Intended Audience :: End Users/Desktop",
         "License :: OSI Approved :: MIT License",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.8",
-        "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
-        "Programming Language :: Python :: 3.11",
     ],
     entry_points={
         "console_scripts": [

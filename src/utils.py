@@ -17,7 +17,6 @@ from src.constants import OPENWEATHER_API_KEY
 
 # Constants
 FAISS_INDEX_DIR = "faiss_index"
-TRAVEL_DOCS_DIR = "travel_docs"
 MAX_RETRIES = 5
 BASE_DELAY = 2
 TOP_K_RETRIEVAL = 5
@@ -32,6 +31,58 @@ embedder = SentenceTransformer("BAAI/bge-base-en")
 session = boto3.Session(profile_name="ogokmen_bedrock")
 bedrock = session.client("bedrock-runtime", region_name="us-east-1")
 model_id = "anthropic.claude-3-sonnet-20240229-v1:0"
+
+# Global index and chunks
+index = None
+chunks = []
+
+def initialize_index():
+    """Initialize or load the FAISS index and chunks."""
+    global index, chunks
+    if os.path.exists(os.path.join(FAISS_INDEX_DIR, "index.faiss")):
+        index, chunks = load_index(FAISS_INDEX_DIR)
+    else:
+        index = faiss.IndexFlatL2(embedder.get_sentence_embedding_dimension())
+        chunks = []
+
+def update_index(location: str) -> None:
+    """
+    Update the FAISS index with content for a new location.
+    
+    Args:
+        location: Location to add to the index
+    """
+    global index, chunks
+    
+    # Initialize index if not exists
+    if index is None:
+        initialize_index()
+    
+    # Skip if location already indexed
+    if any(c["location"].lower() == location.lower() for c in chunks):
+        return
+    
+    # Get and process content
+    content = get_wikivoyage_page(location)
+    if not content:
+        return
+        
+    new_chunks = chunk_text(content, location)
+    if not new_chunks:
+        return
+    
+    # Build new index
+    new_index, _ = build_faiss_index(new_chunks, embedder)
+    
+    # Update global index and chunks
+    if index.ntotal == 0:
+        index = new_index
+    else:
+        index.add(new_index.reconstruct_n(0, new_index.ntotal))
+    chunks.extend(new_chunks)
+    
+    # Save updated index
+    save_index(index, new_chunks)
 
 
 def get_weather(city: str) -> Dict[str, Union[str, float]]:
@@ -167,27 +218,6 @@ def get_wikivoyage_page(title: str, lang: str = "en") -> str:
         return ""
 
 
-def cache_wikivoyage(title: str, directory: str = TRAVEL_DOCS_DIR) -> None:
-    """
-    Cache Wikivoyage content to a local file.
-    
-    Args:
-        title: Title of the Wikivoyage page
-        directory: Directory to store cached files
-    """
-    os.makedirs(directory, exist_ok=True)
-    path = os.path.join(directory, f"{title}.json")
-
-    if os.path.exists(path):
-        print(f"✅ Cached: {title}")
-        return
-
-    content = get_wikivoyage_page(title)
-    with open(path, "w") as f:
-        json.dump({"title": title, "content": content}, f)
-    print(f"⬇️ Saved: {title}")
-
-
 def chunk_text(
     text: str, location: str, max_tokens: int = CHUNK_MAX_TOKENS, overlap: int = CHUNK_OVERLAP
 ) -> List[Dict[str, str]]:
@@ -304,6 +334,11 @@ def retrieve(
     """
     if not chunks:
         return []
+
+    # Initialize index if not exists
+    global index
+    if index is None:
+        initialize_index()
 
     q_emb = embedder.encode([query])
     chunk_texts = [c["text"] for c in chunks]
@@ -465,38 +500,3 @@ def tokenize_dataset(dataset: Any, tokenizer: AutoTokenizer, max_length: int = 1
         return tokenized
 
     return dataset.map(tokenize, batched=False)
-
-
-if __name__ == "__main__":
-    import os
-    from constants import QUESTIONS
-
-    # Load or initialize index and chunks
-    if os.path.exists(os.path.join(FAISS_INDEX_DIR, "index.faiss")):
-        index, all_chunks = load_index(FAISS_INDEX_DIR)
-    else:
-        index = faiss.IndexFlatL2(embedder.get_sentence_embedding_dimension())
-        all_chunks = []
-
-    # Track already indexed locations
-    indexed_locations = set([c["location"].lower() for c in all_chunks if "location" in c])
-
-    # Process new locations
-    locations = [extract_location(q) for q in QUESTIONS if extract_location(q)]
-    for location in locations:
-        if location.lower() in indexed_locations:
-            print(f"✅ Skipping already indexed location: {location}")
-            continue
-
-        print(f"🔍 Processing: {location}")
-        content = get_wikivoyage_page(location)
-        chunks = chunk_text(content, location)
-
-        # Encode and add to existing index
-        new_index, new_chunks = build_faiss_index(chunks, embedder)
-        index.add(new_index.reconstruct_n(0, new_index.ntotal))
-        all_chunks.extend(new_chunks)
-
-    # Save updated index and chunks
-    save_index(index, all_chunks, outdir=FAISS_INDEX_DIR)
-    print("✅ Indexing complete.")
