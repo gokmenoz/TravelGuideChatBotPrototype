@@ -1,99 +1,120 @@
-# Travel Guide Chatbot Prototype
+# Travel Guide Chatbot
 
-This repository contains the code for a Travel Guide Chatbot, built using Streamlit, Sentence Transformers, and vector search with FAISS. This chatbot assists users by answering travel-related questions using semantic search, retrieval-augmented generation (RAG), and generative AI models including Claude and LLaMA.
+A travel guide chatbot that uses RAG (Retrieval-Augmented Generation) and Claude to provide travel information. The chatbot can answer questions about destinations, provide weather information, and visa requirements.
 
 ## Features
 
-* **Semantic Search**: Utilizes sentence embeddings to match user queries with relevant travel information.
-* **Interactive UI**: Simple and user-friendly interface powered by Streamlit.
-* **Efficient Retrieval**: FAISS integration for rapid information retrieval.
-* **RAG Algorithm**: Retrieval-augmented generation using a cached knowledge base for enhanced accuracy and efficiency.
-* **Instruction Tuning**: Custom instruction tuning performed on LLaMA to improve chatbot responses.
-* **Advanced Generative Models**: Uses Claude and LLaMA models to provide sophisticated and context-aware responses.
-
-## Technologies Used
-
-* Python 3.10
-* Streamlit
-* Sentence Transformers (`all-MiniLM-L6-v2`)
-* PyTorch (optimized for Apple Silicon)
-* FAISS (CPU version)
-* Claude 3.7 Sonnet generative AI
+- 🤖 Powered by Claude 3 Sonnet
+- 🔍 RAG-based knowledge retrieval
+- 🌤️ Real-time weather information
+- 📝 Visa requirement information
+- 💬 Streaming responses
+- 📚 Dynamic knowledge base expansion
 
 ## Installation
 
-### Clone the Repository
-
+1. Clone the repository:
 ```bash
-git clone TravelGuideChatBotPrototype
-cd TravelGuideChatBotPrototype
+git clone https://github.com/yourusername/travel-guide-chatbot.git
+cd travel-guide-chatbot
 ```
 
-Here's the updated `README.md` reflecting your switch from **conda** to **Python virtual environments (`venv`)** due to segmentation fault issues:
-
----
-
-### ✅ Updated `README.md` snippet (only the changed section):
-
-````markdown
-### Setup Environment (Recommended)
-
-Create and activate a Python virtual environment:
-
+2. Create and activate a virtual environment:
 ```bash
-python3.10 -m venv travelchat-venv
-source travelchat-venv/bin/activate  # or .\travelchat-venv\Scripts\activate on Windows
-````
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
 
-Install dependencies:
-
+3. Install the package:
 ```bash
-pip install --upgrade pip
-pip install -r requirements.txt
+pip install -e .
 ```
 
-**Note**: For Apple Silicon users, ensure you install PyTorch optimized for CPU:
-
+4. Set up environment variables:
 ```bash
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+# Create a .env file with:
+OPENWEATHER_API_KEY="your_openweather_api_key"
 ```
 
-
-## Running the Chatbot
-
-Start the Streamlit application:
-
+5. Configure AWS credentials for Claude access:
 ```bash
-streamlit run src/app.py
+aws configure --profile ogokmen_bedrock
 ```
 
-The chatbot interface will be available at:
+## Usage
 
+1. Start the API server:
+```bash
+uvicorn src.api:app --host 0.0.0.0 --port 8001 --reload
 ```
-http://localhost:8001
+
+2. Make a request:
+```bash
+curl -X POST http://127.0.0.1:8001/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "What can I do for 3 days in Lisbon?"}'
 ```
+
+## API Endpoints
+
+- `POST /chat`: Main chat endpoint
+  - Request body: `{"message": "your question", "history": []}`
+  - Response: `{"response": "answer", "location": "detected_location"}`
+
+- `GET /weather?city={city}`: Get weather information for a city
+- `GET /visa?country={country}`: Get visa information for a country
+- `GET /health`: Health check endpoint
+- `GET /`: Root endpoint with status message
 
 ## Project Structure
 
 ```
-.
-├── src
-│   ├── app.py           # Streamlit UI entry point
-│   ├── api.py 
-│   ├── build_faiss_index.py
-│   ├── constants.py
-│   └── utils.py    
-├── faiss_index          # FAISS indexes
-├── requirements.txt     # Python dependencies
-└── README.md            # This documentation
+travel-guide-chatbot/
+├── src/
+│   ├── api.py          # FastAPI application
+│   ├── utils.py        # Utility functions
+│   └── constants.py    # Constants and configuration
+├── faiss_index/        # FAISS index and chunks (gitignored)
+├── travel_docs/        # Cached travel documents (gitignored)
+├── setup.py           # Package configuration
+└── README.md          # This file
 ```
 
-## Future Improvements
+## Dependencies
 
-* Integration with external travel APIs
-* Enhanced chat interactions with larger LLM models
-* Support for multilingual queries
+- FastAPI: Web framework
+- FAISS: Vector similarity search
+- Sentence Transformers: Text embeddings
+- Claude: Language model
+- OpenWeather API: Weather information
+- REST Countries API: Country information
 
-## Contributing
+## Development
 
-Pull requests are welcome! For major changes, please open an issue first to discuss improvements.
+1. Build the FAISS index:
+```bash
+python src/utils.py
+```
+
+2. Run tests (when available):
+```bash
+pytest
+```
+
+## License
+
+MIT License
+
+## API Usage
+
+Start the server:
+```bash
+uvicorn src.api:app --host 0.0.0.0 --port 8001 --reload
+```
+
+Example API call:
+```bash
+curl -X POST http://127.0.0.1:8001/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "What can I do for 3 days in Lisbon?"}'
+```

@@ -1,14 +1,10 @@
-import pickle
 from typing import Dict, List, Optional
 
-import faiss
-from fastapi import FastAPI
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sentence_transformers import SentenceTransformer
 
-from constants import OPENWEATHER_API_KEY
-from utils import (
+from src.utils import (
     build_prompt_with_history,
     build_rag_prompt,
     call_claude_stream,
@@ -17,6 +13,8 @@ from utils import (
     maybe_enrich_prompt,
     retrieve,
     visa_info,
+    load_index,
+    embedder,
 )
 
 """
@@ -27,68 +25,76 @@ curl -X POST http://127.0.0.1:8001/chat \
   -d '{"query": "What can I do for 3 days in Lisbon?"}'
 """
 
-app = FastAPI()
+app = FastAPI(title="Travel Guide Chatbot API")
 
-# Load FAISS + Chunks
-index, chunks = faiss.read_index("faiss_index/index.faiss"), pickle.load(
-    open("faiss_index/chunks.pkl", "rb")
+# Enable CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
-embedder = SentenceTransformer("BAAI/bge-base-en")
 
+# Load FAISS index and chunks
+index, chunks = load_index()
 
 class ChatRequest(BaseModel):
-    query: str
-    location: Optional[str] = None
-    history: Optional[List[Dict[str, str]]] = []  # [{role: "user", content: "..."}]
+    message: str
+    history: Optional[List[Dict[str, str]]] = None
 
+class ChatResponse(BaseModel):
+    response: str
+    location: Optional[str] = None
 
 @app.get("/")
 def root():
     return {"message": "✅ Travel Chatbot API is running."}
 
-
 @app.get("/weather")
 def weather(city: str):
     return get_weather(city)
-
 
 @app.get("/visa")
 def visa(country: str):
     return visa_info(country)
 
+@app.post("/chat", response_model=ChatResponse)
+async def chat(request: ChatRequest):
+    try:
+        # Extract location from message
+        location = extract_location(request.message)
+        
+        # Enrich prompt with additional context
+        enriched_context = maybe_enrich_prompt(request.message, location) if location else ""
+        
+        # Retrieve relevant chunks
+        relevant_chunks = retrieve(request.message, chunks, embedder)
+        context = "\n".join(relevant_chunks)
+        
+        # Build RAG prompt
+        rag_prompt = build_rag_prompt(context, request.message)
+        
+        # Add enriched context if available
+        if enriched_context:
+            rag_prompt = f"{enriched_context}\n\n{rag_prompt}"
+        
+        # Build messages with history
+        messages = build_prompt_with_history(request.history or [], rag_prompt)
+        
+        # Get streaming response from Claude
+        response_chunks = []
+        for chunk in call_claude_stream(messages_override=messages):
+            response_chunks.append(chunk)
+        
+        return ChatResponse(
+            response="".join(response_chunks),
+            location=location
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/chat")
-def chat(req: ChatRequest):
-    question = req.query
-    location = req.location or extract_location(question)
-    messages = build_prompt_with_history(req.history, question)
-
-    if not location:
-        return {"response": "❗ Please mention a destination in your question."}
-
-    location_chunks = [
-        c for c in chunks if c.get("location", "").lower() == location.lower()
-    ]
-
-    # If no relevant chunks → fallback to Claude with messages
-    if not location_chunks:
-        prompt = f"You are a helpful travel assistant. Answer this:\n\n{question}"
-        stream = call_claude_stream(prompt, messages_override=messages)
-        return StreamingResponse(content=stream, media_type="text/plain")
-
-    docs = retrieve(question, location_chunks, embedder)
-
-    if not docs:
-        prompt = f"You are a helpful travel assistant. Answer this:\n\n{question}"
-        stream = call_claude_stream(prompt, messages_override=messages)
-        return StreamingResponse(content=stream, media_type="text/plain")
-
-    context = "\n---\n".join(docs)
-    external_context = maybe_enrich_prompt(question, location)
-    full_context = (
-        external_context + "\n---\n" + context if external_context else context
-    )
-    rag_prompt = build_rag_prompt(full_context, question)
-    stream = call_claude_stream(rag_prompt, messages_override=messages)
-
-    return StreamingResponse(content=stream, media_type="text/plain")
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy"}

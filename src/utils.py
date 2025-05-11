@@ -3,7 +3,7 @@ import os
 import pickle
 import random
 import time
-from typing import Dict, List
+from typing import Dict, List, Optional, Union, Generator, Any
 
 import boto3
 import botocore.exceptions
@@ -11,56 +11,109 @@ import faiss
 import numpy as np
 import requests
 from sentence_transformers import SentenceTransformer
-from transformers import (AutoTokenizer, pipeline)
+from transformers import AutoTokenizer
 
-from constants import OPENWEATHER_API_KEY
+from src.constants import OPENWEATHER_API_KEY
+
+# Constants
+FAISS_INDEX_DIR = "faiss_index"
+TRAVEL_DOCS_DIR = "travel_docs"
+MAX_RETRIES = 5
+BASE_DELAY = 2
+TOP_K_RETRIEVAL = 5
+CHUNK_MAX_TOKENS = 300
+CHUNK_OVERLAP = 50
+
+# Global variables
+tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+embedder = SentenceTransformer("BAAI/bge-base-en")
+
+# AWS Bedrock setup
+session = boto3.Session(profile_name="ogokmen_bedrock")
+bedrock = session.client("bedrock-runtime", region_name="us-east-1")
+model_id = "anthropic.claude-3-sonnet-20240229-v1:0"
 
 
-def get_weather(city: str):
+def get_weather(city: str) -> Dict[str, Union[str, float]]:
+    """
+    Fetch current weather information for a city using OpenWeather API.
+    
+    Args:
+        city: Name of the city to get weather for
+        
+    Returns:
+        Dictionary containing weather information or error message
+    """
     url = f"https://api.openweathermap.org/data/2.5/weather"
     params = {"q": city, "appid": OPENWEATHER_API_KEY, "units": "metric"}
 
-    response = requests.get(url, params=params).json()
-    if response.get("cod") != 200:
-        return {"error": f"Could not fetch weather for {city}."}
+    try:
+        response = requests.get(url, params=params, timeout=10).json()
+        if response.get("cod") != 200:
+            return {"error": f"Could not fetch weather for {city}."}
 
-    weather = response["weather"][0]["description"]
-    temp = response["main"]["temp"]
-    feels_like = response["main"]["feels_like"]
-
-    return {
-        "city": city,
-        "weather": weather,
-        "temperature_c": temp,
-        "feels_like_c": feels_like,
-    }
-
-
-def visa_info(country: str):
-    url = f"https://restcountries.com/v3.1/name/{country}"
-    response = requests.get(url).json()
-
-    if isinstance(response, list):
-        data = response[0]
-        name = data.get("name", {}).get("common", country)
-        region = data.get("region", "Unknown")
-        subregion = data.get("subregion", "Unknown")
-        capital = data.get("capital", ["Unknown"])[0]
-        population = data.get("population", "Unknown")
+        weather = response["weather"][0]["description"]
+        temp = response["main"]["temp"]
+        feels_like = response["main"]["feels_like"]
 
         return {
-            "country": name,
-            "region": region,
-            "subregion": subregion,
-            "capital": capital,
-            "population": population,
-            "visa_note": "❗Visa requirements vary by passport. Check https://apply.joinsherpa.com/ or your embassy.",
+            "city": city,
+            "weather": weather,
+            "temperature_c": temp,
+            "feels_like_c": feels_like,
         }
+    except (requests.RequestException, KeyError, ValueError) as e:
+        return {"error": f"Error fetching weather for {city}: {str(e)}"}
 
-    return {"error": f"Could not find visa info for {country}"}
+
+def visa_info(country: str) -> Dict[str, str]:
+    """
+    Fetch visa and country information using REST Countries API.
+    
+    Args:
+        country: Name of the country to get visa info for
+        
+    Returns:
+        Dictionary containing country and visa information or error message
+    """
+    url = f"https://restcountries.com/v3.1/name/{country}"
+    
+    try:
+        response = requests.get(url, timeout=10).json()
+
+        if isinstance(response, list):
+            data = response[0]
+            name = data.get("name", {}).get("common", country)
+            region = data.get("region", "Unknown")
+            subregion = data.get("subregion", "Unknown")
+            capital = data.get("capital", ["Unknown"])[0]
+            population = data.get("population", "Unknown")
+
+            return {
+                "country": name,
+                "region": region,
+                "subregion": subregion,
+                "capital": capital,
+                "population": population,
+                "visa_note": "❗Visa requirements vary by passport. Check https://apply.joinsherpa.com/ or your embassy.",
+            }
+
+        return {"error": f"Could not find visa info for {country}"}
+    except (requests.RequestException, KeyError, ValueError) as e:
+        return {"error": f"Error fetching visa info for {country}: {str(e)}"}
 
 
 def maybe_enrich_prompt(question: str, location: str) -> str:
+    """
+    Enrich the prompt with additional context like weather and visa information.
+    
+    Args:
+        question: User's question
+        location: Location mentioned in the question
+        
+    Returns:
+        Enriched prompt with additional context
+    """
     prompt_parts = []
 
     # Weather
@@ -80,14 +133,20 @@ def maybe_enrich_prompt(question: str, location: str) -> str:
                 f"{visa['visa_note']} {location} is in {visa['subregion']} with capital {visa['capital']}."
             )
 
-    # Budget (if added later)
-    # ...
-
     return "\n".join(prompt_parts) if prompt_parts else ""
 
 
-def get_wikivoyage_page(title: str, lang="en") -> str:
-    """Fetch clean text of a Wikivoyage page by title."""
+def get_wikivoyage_page(title: str, lang: str = "en") -> str:
+    """
+    Fetch clean text of a Wikivoyage page by title.
+    
+    Args:
+        title: Title of the Wikivoyage page
+        lang: Language code (default: "en")
+        
+    Returns:
+        Extracted text content from the page
+    """
     url = f"https://{lang}.wikivoyage.org/w/api.php"
     params = {
         "action": "query",
@@ -97,13 +156,25 @@ def get_wikivoyage_page(title: str, lang="en") -> str:
         "titles": title,
     }
 
-    response = requests.get(url, params=params)
-    data = response.json()
-    page = next(iter(data["query"]["pages"].values()))
-    return page.get("extract", "")
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        page = next(iter(data["query"]["pages"].values()))
+        return page.get("extract", "")
+    except (requests.RequestException, KeyError, ValueError) as e:
+        print(f"Error fetching Wikivoyage page for {title}: {str(e)}")
+        return ""
 
 
-def cache_wikivoyage(title, directory="travel_docs"):
+def cache_wikivoyage(title: str, directory: str = TRAVEL_DOCS_DIR) -> None:
+    """
+    Cache Wikivoyage content to a local file.
+    
+    Args:
+        title: Title of the Wikivoyage page
+        directory: Directory to store cached files
+    """
     os.makedirs(directory, exist_ok=True)
     path = os.path.join(directory, f"{title}.json")
 
@@ -117,12 +188,21 @@ def cache_wikivoyage(title, directory="travel_docs"):
     print(f"⬇️ Saved: {title}")
 
 
-tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")  # or any tokenizer
-
-
 def chunk_text(
-    text: str, location: str, max_tokens=300, overlap=50
+    text: str, location: str, max_tokens: int = CHUNK_MAX_TOKENS, overlap: int = CHUNK_OVERLAP
 ) -> List[Dict[str, str]]:
+    """
+    Split text into overlapping chunks for processing.
+    
+    Args:
+        text: Text to split into chunks
+        location: Location associated with the text
+        max_tokens: Maximum tokens per chunk
+        overlap: Number of tokens to overlap between chunks
+        
+    Returns:
+        List of text chunks with location metadata
+    """
     tokens = tokenizer.tokenize(text)
     chunks = []
     start = 0
@@ -134,10 +214,17 @@ def chunk_text(
     return chunks
 
 
-embedder = SentenceTransformer("BAAI/bge-base-en")  # Or use "all-MiniLM-L6-v2"
-
-
-def build_faiss_index(text_chunks: List[dict], embedder):
+def build_faiss_index(text_chunks: List[Dict[str, str]], embedder: SentenceTransformer) -> tuple[faiss.Index, List[Dict[str, str]]]:
+    """
+    Build a FAISS index from text chunks.
+    
+    Args:
+        text_chunks: List of text chunks with metadata
+        embedder: Sentence transformer model for encoding
+        
+    Returns:
+        Tuple of (FAISS index, text chunks)
+    """
     if not text_chunks:
         raise ValueError("No text chunks provided to build FAISS index.")
 
@@ -148,7 +235,15 @@ def build_faiss_index(text_chunks: List[dict], embedder):
     return index, text_chunks
 
 
-def save_index(index, chunks, outdir="faiss_index"):
+def save_index(index: faiss.Index, chunks: List[Dict[str, str]], outdir: str = FAISS_INDEX_DIR) -> None:
+    """
+    Save FAISS index and chunks to disk.
+    
+    Args:
+        index: FAISS index to save
+        chunks: Text chunks to save
+        outdir: Output directory
+    """
     os.makedirs(outdir, exist_ok=True)
     chunks_path = os.path.join(outdir, "chunks.pkl")
 
@@ -176,14 +271,37 @@ def save_index(index, chunks, outdir="faiss_index"):
     print(f"✅ Appended {len(chunks)} chunks. Total: {len(all_chunks)}")
 
 
-def load_index(outdir="faiss_index"):
+def load_index(outdir: str = FAISS_INDEX_DIR) -> tuple[faiss.Index, List[Dict[str, str]]]:
+    """
+    Load FAISS index and chunks from disk.
+    
+    Args:
+        outdir: Directory containing index files
+        
+    Returns:
+        Tuple of (FAISS index, text chunks)
+    """
     index = faiss.read_index(f"{outdir}/index.faiss")
     with open(f"{outdir}/chunks.pkl", "rb") as f:
         chunks = pickle.load(f)
     return index, chunks
 
 
-def retrieve(query, chunks, embedder, top_k=5):
+def retrieve(
+    query: str, chunks: List[Dict[str, str]], embedder: SentenceTransformer, top_k: int = TOP_K_RETRIEVAL
+) -> List[str]:
+    """
+    Retrieve most relevant chunks for a query.
+    
+    Args:
+        query: Search query
+        chunks: Available text chunks
+        embedder: Sentence transformer model for encoding
+        top_k: Number of chunks to retrieve
+        
+    Returns:
+        List of retrieved text chunks
+    """
     if not chunks:
         return []
 
@@ -200,6 +318,16 @@ def retrieve(query, chunks, embedder, top_k=5):
 
 
 def build_rag_prompt(context: str, question: str) -> str:
+    """
+    Build a RAG prompt with context and question.
+    
+    Args:
+        context: Retrieved context
+        question: User's question
+        
+    Returns:
+        Formatted prompt for the LLM
+    """
     return f"""
 You are a helpful travel assistant. Use the following context to answer the question.
 
@@ -211,12 +339,27 @@ Question: {question}
 Answer:"""
 
 
-session = boto3.Session(profile_name="ogokmen_bedrock")
-bedrock = session.client("bedrock-runtime", region_name="us-east-1")
-model_id = "anthropic.claude-3-sonnet-20240229-v1:0"
-
-
-def call_claude_stream(prompt=None, messages_override=None, retries=5, base_delay=2):
+def call_claude_stream(
+    prompt: Optional[str] = None,
+    messages_override: Optional[List[Dict[str, str]]] = None,
+    retries: int = MAX_RETRIES,
+    base_delay: int = BASE_DELAY,
+) -> Generator[str, None, None]:
+    """
+    Call Claude API with streaming response.
+    
+    Args:
+        prompt: Text prompt for Claude
+        messages_override: Override default message format
+        retries: Number of retry attempts
+        base_delay: Base delay between retries
+        
+    Returns:
+        Generator yielding response chunks
+        
+    Raises:
+        RuntimeError: If all retries fail
+    """
     messages = messages_override or [{"role": "user", "content": prompt}]
 
     body = {
@@ -262,89 +405,55 @@ def call_claude_stream(prompt=None, messages_override=None, retries=5, base_dela
     raise RuntimeError("❌ Claude streaming call failed after retries")
 
 
-def maybe_enrich_prompt(question: str, location: str) -> str:
-    prompt_parts = []
-
-    # Weather
-    if "weather" in question.lower():
-        weather = get_weather(location)
-        if "error" not in weather:
-            prompt_parts.append(
-                f"The current weather in {location} is {weather['temperature_c']}°C, "
-                f"feels like {weather['feels_like_c']}°C, with {weather['weather']}."
-            )
-
-    # Visa
-    if "visa" in question.lower():
-        visa = visa_info(location)
-        if "error" not in visa:
-            prompt_parts.append(
-                f"{visa['visa_note']} {location} is in {visa['subregion']} with capital {visa['capital']}."
-            )
-
-    # Budget (if added later)
-    # ...
-
-    return "\n".join(prompt_parts) if prompt_parts else ""
-
-
-def build_prompt_with_history(history, question):
+def build_prompt_with_history(history: List[Dict[str, str]], question: str) -> List[Dict[str, str]]:
+    """
+    Build a prompt with conversation history.
+    
+    Args:
+        history: List of previous messages
+        question: Current question
+        
+    Returns:
+        List of messages including history and current question
+    """
     messages = history + [{"role": "user", "content": question}]
     return messages
 
 
-def rag_qa(question, chunks, embedder):
-    retrieved_chunks = retrieve(question, chunks, embedder, top_k=5)
-    context = "\n---\n".join(retrieved_chunks)
-    prompt = build_rag_prompt(context, question)
-    return call_claude_stream(prompt)
-
-
-# Load once globally
-ner = pipeline("ner", model="dslim/bert-base-NER", grouped_entities=True)
-
-
-def extract_location(text):
+def extract_location(text: str) -> Optional[str]:
+    """
+    Extract location from text using simple rule-based approach.
+    
+    Args:
+        text: Input text
+        
+    Returns:
+        Extracted location or None if not found
+    """
     if text.lower() == text:
         text = text.capitalize()
-    """Extract the first detected location-like entity using NER."""
-    entities = ner(text)
-    for ent in entities:
-        if ent["entity_group"] in ["LOC", "PER", "ORG"]:  # optionally just "LOC"
-            return ent["word"].strip()
+    
+    # Simple location detection for now
+    # TODO: Consider using a proper NER model if needed
+    words = text.split()
+    for word in words:
+        if word[0].isupper() and len(word) > 1:
+            return word.strip()
     return None
 
 
-def maybe_update_rag(location, index_dir="faiss_index"):
-    path = f"travel_docs/{location}.json"
-    if os.path.exists(path):
-        return  # already in DB
-
-    print(f"🌍 Fetching RAG info for: {location}")
-    content = get_wikivoyage_page(location)
-    if not content.strip():
-        print(f"⚠️ No content found for {location}")
-        return
-
-    cache_wikivoyage(location)
-    chunks = chunk_text(content, location)
-    vectors = embedder.encode(chunks)
-
-    index = faiss.read_index(f"{index_dir}/index.faiss")
-    with open(f"{index_dir}/chunks.pkl", "rb") as f:
-        all_chunks = pickle.load(f)
-
-    index.add(vectors)
-    all_chunks.extend(chunks)
-
-    faiss.write_index(index, f"{index_dir}/index.faiss")
-    with open(f"{index_dir}/chunks.pkl", "wb") as f:
-        pickle.dump(all_chunks, f)
-
-    print(f"✅ {location} added to index.")
-
-
-def tokenize_dataset(dataset, tokenizer, max_length=1024):
+def tokenize_dataset(dataset: Any, tokenizer: AutoTokenizer, max_length: int = 1024) -> Any:
+    """
+    Tokenize a dataset for training.
+    
+    Args:
+        dataset: Dataset to tokenize
+        tokenizer: Tokenizer to use
+        max_length: Maximum sequence length
+        
+    Returns:
+        Tokenized dataset
+    """
     def tokenize(example):
         tokenized = tokenizer(
             example["text"],
@@ -352,7 +461,42 @@ def tokenize_dataset(dataset, tokenizer, max_length=1024):
             truncation=True,
             max_length=max_length,
         )
-        tokenized["labels"] = tokenized["input_ids"][:]  # or .copy() if you prefer
+        tokenized["labels"] = tokenized["input_ids"][:]
         return tokenized
 
     return dataset.map(tokenize, batched=False)
+
+
+if __name__ == "__main__":
+    import os
+    from constants import QUESTIONS
+
+    # Load or initialize index and chunks
+    if os.path.exists(os.path.join(FAISS_INDEX_DIR, "index.faiss")):
+        index, all_chunks = load_index(FAISS_INDEX_DIR)
+    else:
+        index = faiss.IndexFlatL2(embedder.get_sentence_embedding_dimension())
+        all_chunks = []
+
+    # Track already indexed locations
+    indexed_locations = set([c["location"].lower() for c in all_chunks if "location" in c])
+
+    # Process new locations
+    locations = [extract_location(q) for q in QUESTIONS if extract_location(q)]
+    for location in locations:
+        if location.lower() in indexed_locations:
+            print(f"✅ Skipping already indexed location: {location}")
+            continue
+
+        print(f"🔍 Processing: {location}")
+        content = get_wikivoyage_page(location)
+        chunks = chunk_text(content, location)
+
+        # Encode and add to existing index
+        new_index, new_chunks = build_faiss_index(chunks, embedder)
+        index.add(new_index.reconstruct_n(0, new_index.ntotal))
+        all_chunks.extend(new_chunks)
+
+    # Save updated index and chunks
+    save_index(index, all_chunks, outdir=FAISS_INDEX_DIR)
+    print("✅ Indexing complete.")
